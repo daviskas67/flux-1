@@ -1,121 +1,151 @@
-# Flux-1 — 1-bit Turing storm
+# FLUX-1
 
-Not just one bit. It's a **massively parallel 1-bit processor**: a **16×16 grid
-of 256 compute cells** where bits travel like ants — *waves* racing across the
-matrix, each cell a memory element, a tiny ALU and a router in one.
+A 1-bit streaming computer with 3 square-wave audio channels and FM/modulation.
 
-On top of the grid: **3 square-wave audio channels** that are deliberately
-**unrestricted** — frequency, amplitude, phase and FM routing are all set *from
-the waves themselves*. Tune the parameters right and you get honest FM
-synthesis. The grid *is* the sequencer.
+FLUX-1 is a von-Neumann machine with a 256-bit GRID (32 bytes of RAM) as its
+state, a 64 KB read-only program store (the "firmware"), one 16-bit program
+counter, a 1-bit accumulator, a 1-bit carry and a 2-bit mode register. Every
+instruction is just 8 bits — the four base opcodes NOP/SET/CLR/JMP are enough
+to program it, and a two-byte extension layer adds streaming, branching and
+audio control.
 
-> Русская версия: [README.ru.md](README.ru.md)
-> Документация / Docs: [LANGUAGE.md](docs/LANGUAGE.md) ·
-> [ARCHITECTURE.md](docs/ARCHITECTURE.md)
-
----
-
-## Highlights
-
-* **256 cells** (16×16), each with a 1-bit data register, a persistent 1-bit
-  accumulator, and its own tiny rule-program.
-* **Wave programming**: you write a *wave map*, not linear code — "if your bit
-  is 1, pass it to your East neighbor in 2 ticks".
-* **3 square channels with FM**: `chan 2 square freq 220 amp 0.6 mod 0 400`.
-  Waves can rewrite any channel parameter at any tick — sequencers, LFOs,
-  vibrato and full FM clarinets emerge from the grid.
-* **Synchronous two-phase ticks** (compute → commit), like real digital logic.
-* **WAV export** (`--wav out.wav`) — mono 16-bit audio, rendered in lockstep
-  with the grid.
-
----
-
-## Build & run
-
-Requires a C++17 compiler (g++ / clang++ / MSVC).
-
-```bash
-g++ -O2 -std=c++17 main.cpp flux1.cpp -o flux1
-
-# animate a serpent
-./flux1 examples/serpent.flux
-
-# storm with accumulator trails, single final frame
-./flux1 examples/storm.flux --acc --quiet
-
-# FM synthesis straight to a file
-./flux1 examples/fm.flux --wav fm.wav
-
-# chiptune arpeggio from three wave rows
-./flux1 examples/arp.flux --wav arp.wav
-```
-
-### CLI options
+The whole point: the GRID *is* both the screen and the memory. A 16×16 display
+renders the GRID directly, and the three square channels synthesize sound from
+GRID bits and from each other (any channel can FM-modulate another channel's
+frequency, or modulate duty/volume).
 
 ```
-flux1 program.flux [--acc] [--ticks N] [--steps N] [--pause MS] [--quiet] [--wav out.wav]
+                256-bit GRID (screen + RAM)
+                ┌───────────────────────┐
+   ROM 64KB ──► │  CPU (PC, ACC, CARRY) │ ──► 3 square channels ──► sound
+   (firmware)   └───────────────────────┘          (FM/modulation)
 ```
 
-| Option      | Meaning                                        |
-|-------------|------------------------------------------------|
-| `--acc`     | render accumulators as `A`                     |
-| `--ticks N` | override the number of ticks                   |
-| `--steps N` | print every N-th frame during animation        |
-| `--pause MS`| override per-frame delay                       |
-| `--quiet`   | no animation; print only the final frame       |
-| `--wav FILE`| write rendered audio (mono 16-bit WAV)         |
-
----
-
-## Language in 60 seconds
-
-```flux
-steps 200                       # ticks to simulate
-cell 0 0 : always emit E 1      # generator: keep emitting 1s East
-rule bit1 send E 2              # everywhere: forward bits East, 2-tick hop
-rule bit1 toggleacc             # every hop leaves an accumulator trail
-chan 2 square freq 220 amp 0.6 mod 0 400   # FM clarinet
-```
-
-Full reference: [docs/LANGUAGE.md](docs/LANGUAGE.md)
-
-## Model in 30 seconds
-
-* Each tick is two phases: **A — evaluate** every cell, **B — commit** all
-  moves simultaneously. Accumulators survive ticks.
-* A wave with `send DIR D` lands at its neighbor after `D` ticks and becomes
-  actionable one tick later (`delay 0`).
-* Collisions: the first arrival wins (acts as a merge/absorb primitive).
-* Audio: each grid tick renders `sps` samples (default ≈735, ~60 ticks/sec).
-
-Full model: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
-
----
-
-## Examples
-
-| File                | Shows                                            |
-|---------------------|--------------------------------------------------|
-| `pulse.flux`        | wave train: generator drives 1-bits East         |
-| `wave.flux`         | one wave tracing the matrix perimeter            |
-| `serpent.flux`      | a bit drawing a snake across the whole grid      |
-| `storm.flux`        | three waves, each leaving an accumulator trail   |
-| `logic.flux`        | two streams meeting in an AND gate (acc=1 when both arrive) |
-| `fm.flux`           | FM synthesis: 220 Hz carrier modulated by an LFO, frequency sequenced by waves |
-| `arp.flux`          | chiptune arpeggio: 3 wave rows play notes on 3 channels |
-
----
-
-## Layout
+## Quick start
 
 ```
-flux1.hpp           core types: Cell, Wave, Rule, Chan, class Flux
-flux1.cpp           the tick, audio renderer, ASCII render
-main.cpp            .flux parser, CLI, WAV writer
-examples/*.flux     demo programs
-docs/               language + architecture reference (EN & RU)
+g++ -O2 -std=c++17 asm/asmflux.cpp -o asm/asmflux.exe     # assembler
+g++ -O2 -std=c++17 flux.cpp flux_core.cpp -o flux.exe      # emulator
+
+asmflux firmware/loop.asm -o firmware/loop.flux             # assemble firmware
+flux firmware/loop.flux --tps 4                             # watch it run
+flux firmware/music.flux --wav firmware/music.wav --secs 12 # render audio to WAV
+```
+
+### Firmware demos
+
+| File               | What it does                                                        |
+|--------------------|---------------------------------------------------------------------|
+| `firmware/loop.asm`   | Running light: SET bit, CLR bit, JMP. The smallest possible program.|
+| `firmware/beep.asm`   | Three-channel chord (C major) — just audio setup, no loop logic.    |
+| `firmware/music.asm`  | A real 4-chord tune (C–Am–F–G): 2-bit counter in GRID, ch2 is a 6 Hz LFO FM-modulating ch0, beat flag toggles ch1 volume. |
+| `firmware/bad_apple.asm` | 16-frame animation streamed from ROM into GRID via `COPY` (generated by `tools/gen_badapple.py`). |
+
+```
+flux firmware/music.flux --tps 120 --acc        # see the counter/beat/channels
+flux firmware/bad_apple.flux --tps 30           # animation
+flux firmware/beep.flux --wav firmware/beep.wav --secs 12
+```
+
+## The instruction set
+
+Every instruction is one byte:
+
+| bits 7..6 | mnemonic | meaning                                    |
+|-----------|----------|--------------------------------------------|
+| `00`      | `NOP`    | no operation                               |
+| `01`      | `SET a`  | grid[a] = 1                                |
+| `10`      | `CLR a`  | grid[a] = 0                                |
+| `11`      | `JMP a`  | PC = (PC & 0xFFC0) \| a  (jump within the current 64-byte block) |
+
+The assembler never emits byte `0xFC` as a base instruction, so it is safe as
+an *extension prefix*: `0xFC <sub> <operands>`. These pseudo-instructions make
+the machine actually programmable:
+
+| mnemonic | encoding          | meaning                             |
+|----------|-------------------|-------------------------------------|
+| `GET a`  | `FC 00 a`         | ACC = grid[a]                       |
+| `PUT a`  | `FC 01 a`         | grid[a] = ACC                       |
+| `XOR a`  | `FC 02 a`         | ACC = ACC XOR grid[a] (toggle)      |
+| `JZ a`   | `FC 03 a`         | if ACC==0 jump within 64-byte block |
+| `JMPF a` | `FC 05 aL aH`     | PC = a (full 16-bit jump)           |
+| `JZF a`  | `FC 06 aL aH`     | if ACC==0 PC = a                    |
+| `COPY d s` | `FC 07 d sL sH` | GRID byte d = ROM[s]                |
+| `SETCH c p v` | `FC 04 c p vL vH` | set channel parameter (see below) |
+
+### Audio control (`SETCH c p v`)
+
+| p | param       | meaning                                        |
+|---|-------------|------------------------------------------------|
+| 0 | `freq`      | frequency in Hz (16-bit)                       |
+| 1 | `duty`      | pulse width 0..255 (0 = silent, 255 = DC)      |
+| 2 | `volume`    | 0..255                                         |
+| 3 | `mod_src`   | 0x00..0xFF grid bit, 0xF0..0xF2 channel, 0xFF off |
+| 4 | `mod_depth` | 8.8 fixed point (256 = 1.0)                    |
+| 5 | `mod_dest`  | 0 = freq, 1 = duty, 2 = volume                 |
+
+The assembler sugar:
+
+```
+FREQ ch v     ; SETCH c 0 v
+DUTY ch v     ; SETCH c 1 v
+VOL  ch v     ; SETCH c 2 v
+MOD  ch src depth dest   ; SETCH c 3 src, SETCH c 4 depth, SETCH c 5 dest
+```
+
+Modulation: `target = base + source * depth`, where source is the grid bit or
+the output (+1/−1) of another channel. So `MOD 0 0xF2 200 0` makes channel 0's
+frequency wobble by ±200/256 × 1 when channel 2 is high, giving vibrato/FM.
+
+## Assembler directives
+
+```
+.org 0x100         ; continue at address
+.byte 1, 2, 0x0F   ; emit bytes
+.word 0x1234, ...  ; emit 16-bit words (LE)
+.incbin "file"     ; include raw bytes
+LABEL:             ; define a label
+; or #             ; comment
+```
+
+Labels support arithmetic: `JMPF FRAME_TABLE+32`, `COPY 3 TABLE+1`.
+
+## Emulator options
+
+```
+flux rom.flux [--tps N] [--frames N] [--wav out.wav] [--wav-rate HZ]
+             [--secs S] [--headless] [--acc] [--steps N]
+```
+
+* `--tps N`    CPU ticks per second for animation (default 60)
+* `--wav out.wav` render audio to WAV and exit (`--secs` controls length)
+* `--wav-rate HZ` sample rate (default 44100; 22050 is the 8086-friendly rate)
+* `--acc`      also print the channel registers (freq/duty/vol/mod)
+* `--steps N`  run N instructions and print one frame (for testing)
+
+## Design notes
+
+* GRID is 256 bits = 32 bytes. Bit `y*16+x` renders at row y, column x.
+* GRID doubles as program state: a "permanent 1" cell (e.g. `SET 0x0F`) plus
+  `XOR` gives you a toggling flip-flop; two such cells make a 2-bit counter.
+* The 64-byte block limit on `JMP`/`JZ` is a deliberate constraint to force
+  self-contained blocks; `JMPF`/`JZF` lift it for full programs.
+* Audio: 16-bit phase accumulator per channel, wrap at 65536; sample = ±1
+  stepped by duty; summed and clipped to 16-bit PCM. WAV is mono.
+
+## Repository layout
+
+```
+SPEC.md            the full design specification
+flux_core.h/.cpp   the CPU core (FluxCPU)
+flux.cpp           emulator front-end (ASCII, WAV)
+asm/asmflux.cpp    the ASM-Flux assembler
+firmware/          example programs (.asm + assembled .flux)
+tools/             generators (bad_apple frames)
+legacy/            the earlier wave-machine prototype (16×16 cellular)
+docs/              language & architecture reference (EN/RU)
 ```
 
 ## License
 
-MIT — do whatever you want with it.
+MIT — see [LICENSE](LICENSE).

@@ -1,220 +1,162 @@
-# Flux-1 Architecture
+# FLUX-1 Architecture
 
-This document describes the execution model of Flux-1: the cell, the wave, the
-synchronous tick, collisions, and the audio pipeline. The language is specified
-in [LANGUAGE.md](LANGUAGE.md).
+FLUX-1 is a tiny von-Neumann computer whose single memory IS the screen, and
+whose three square-wave channels turn that memory into sound.
 
----
-
-## 1. The machine
-
-Flux-1 is a **massively parallel, 1-bit, space-computing machine**. It is not a
-von-Neumann CPU with registers and an instruction stream. It is a 16×16 grid of
-**cells**, each of which is simultaneously a memory element, a tiny ALU and a
-router. Computation happens *where the waves are*.
-
-| Constant | Value | Meaning              |
-|----------|-------|----------------------|
-| `kGrid`  | 16    | grid edge (256 cells)|
-| `kMaxDelay` | 15 | max transport delay |
-| `kChans` | 3     | square audio channels|
-
----
-
-## 2. The cell
-
-```cpp
-struct Cell {
-    uint8_t bit : 1;   // data bit (wave presence)
-    uint8_t acc : 1;   // accumulator bit (persistent flag)
-    uint8_t delay;     // pending transport delay (ticks)
-    Dir     dir;       // direction this node currently pushes its bit
-};
-```
-
-* **`bit`** — whether a wave occupies the cell this tick.
-* **`acc`** — a permanent 1-bit register. It is *not* cleared between ticks;
-  it survives `memset` via a snapshot/restore in phase B. This is Flux-1's
-  persistent memory. Trails, gates, flags all use `acc`.
-* **`delay`** — remaining charging time for the current bit (see §4).
-* **`dir`** — the cell's current routing direction, used by `send H`.
-
-A cell also owns a **program**: an ordered list of `Rule`s (see LANGUAGE.md §8).
-
----
-
-## 3. The wave
-
-A wave is a bit in transit. Conceptually it is a tuple `(x, y, dir, bit, delay)`.
-When a rule pushes a bit to a neighbor, a `Move` is scheduled with the target
-coordinates and a **delay**; the wave "flies" for `delay` ticks before landing.
-
-Delays are the programmer's timing tool: `send E 2` means the bit reaches the
-East neighbor 2 ticks from now. Two waves with different delays can arrive at
-different times even if sent on the same tick.
-
----
-
-## 4. The synchronous tick
-
-Flux-1 uses a strict **two-phase** model, like a real synchronous digital
-circuit. All reads happen in phase A, all writes commit in phase B.
-
-### Phase A — evaluate
-
-For every cell `(x, y)`:
+## Machine model
 
 ```
-if (!cell.bit && cell has no rules) skip
-hadBit = cell.bit
-
-if (cell.bit && cell.delay > 0):
-    cell.delay--            # charging
-    stay.append((idx, cell.delay))
-    continue
-
-consumed = false
-for each rule r in cell.rules (in order):
-    if !condOk(r.cond, cell.bit, cell.acc): continue
-    switch r.action:
-        Send:   # only when cell.bit
-                target = neighbor in (r.dir or cell.dir)
-                if inbounds: moves.append(target, bit, r.delay)
-                consumed = true
-        Emit:   # generator: assert 1 to neighbor
-                moves.append(target, 1, r.delay)
-                # NOT consumed — keeps emitting
-        Stop:   consumed = true
-        SetAcc/ClearAcc/ToggleAcc: mutate cell.acc
-        ChanFreq/ChanAmp/ChanPhase/ChanMod: mutate audio channel
-    if consumed: break
-
-if (!consumed && hadBit):
-    stay.append((idx, 0))   # lingering wave
+        ┌──────────────────────────────────────────────┐
+        │              FLUX-1 CPU                       │
+        │   PC ──16 bit──► address                      │
+        │   │                                           │
+        │   ▼                                           │
+        │  ROM (64 KB, firmware, read-only)  ──decoded─►┼──► GRID write
+        │                                               │
+        │   GRID: 256 bits = 32 bytes of RAM            │
+        │   ACC: 1 bit      CARRY: 1 bit   MODE: 2 bit  │
+        └──────────────────────────────────────────────┘
+              │ grid bits                       │ channel params
+              ▼                                 ▼
+        16×16 display (ASCII/SDL)        3 square channels
+                                          phase accumulators
+                                          FM / PWM / tremolo
+                                              │
+                                              ▼
+                                         mix → WAV / audio
 ```
 
-Key points:
+## State
 
-* **First-match wins.** Rules are scanned in order; the first *consuming*
-  match stops the scan. Non-consuming actions (acc ops, audio ops) run and the
-  scan continues.
-* **Rules run only with a bit ready to act** — a charging wave does not fire
-  rules.
-* **`emit` never consumes**, so emitters produce continuously.
-* **Out-of-bounds `send` kills the wave** (no target scheduled).
+| register | width | meaning                                        |
+|----------|-------|------------------------------------------------|
+| `grid`   | 256 b | RAM + screen: bit `y*16+x` = pixel (x,y)       |
+| `rom`    | 64 KB | firmware, read-only                            |
+| `pc`     | 16 b  | program counter                                |
+| `acc`    | 1 b   | accumulator (used by GET/PUT/XOR/JZ/JZF)       |
+| `carry`  | 1 b   | reserved for arithmetic extensions             |
+| `mode`   | 2 b   | reserved for mode switching                    |
+| `ch[3]`  | —     | audio channels (see Audio)                     |
 
-### Phase B — commit
+## Execution model
 
-```
-accSnap[i] = grid[i].acc                  # save accumulators
-memset(grid, 0)                           # clear everything
-grid[i].acc = accSnap[i]                  # restore accumulators
+The CPU fetches one byte from `rom[pc]` and executes it, then increments `pc`
+(except on jumps). Each instruction takes at least 1 "cycle"; extension bytes
+add cycles so that audio rate stays meaningful.
 
-for (idx, d) in stay:   grid[idx].bit = 1; grid[idx].delay = d
-for m in moves:         if grid[m.idx].bit: continue   # collision!
-                        grid[m.idx].bit = 1
-                        grid[m.idx].delay = m.delay
-```
+### Base instructions
 
-* All state changes are committed **simultaneously**. A cell may be read by a
-  neighbor's rule and still send its own wave in the same tick — the two are
-  independent.
-* **Accumulators are preserved** across the tick (snapshot/restore).
+* `NOP` — nothing.
+* `SET a` — `grid[a] = 1`.
+* `CLR a` — `grid[a] = 0`.
+* `JMP a` — `pc = (pc & 0xFFC0) | a`. Only the low 6 bits are used, so a jump
+  cannot leave the current 64-byte block. This is a deliberate constraint: it
+  keeps blocks self-contained and forces small, simple control flow.
 
----
+### Extensions
 
-## 5. Collisions
+`0xFC` is reserved as an escape. Because SET/CLR/JMP encode `0x40..0xFF` only,
+`0xFC` never collides. After `0xFC`, the next byte is a sub-opcode:
 
-When two or more `Move`s land on the same cell in one tick, **the first one
-wins** (iteration order: rows then columns, source-scan order). Later arrivals
-are dropped. In practice well-formed programs give each cell a single rule and
-rely on delay staggering, so collisions are rare; when they happen they act as
-a *merge/absorb* primitive.
+| sub | op       | effect                                              |
+|-----|----------|-----------------------------------------------------|
+| 0x00| `GET a`  | `acc = (grid[a>>3] >> (a&7)) & 1`                    |
+| 0x01| `PUT a`  | set/clear `grid[a]` from `acc`                       |
+| 0x02| `XOR a`  | `acc ^= grid bit a`                                  |
+| 0x03| `JZ a`   | if `acc == 0` then block-local jump                  |
+| 0x04| `SETCH c p v` | channel parameter set                          |
+| 0x05| `JMPF a` | `pc = a` (full 16-bit)                               |
+| 0x06| `JZF a`  | if `acc == 0` then `pc = a`                          |
+| 0x07| `COPY d s` | `grid[d] = rom[s]` (stream ROM data into GRID)     |
 
----
-
-## 6. Timing math
-
-A wave with `send DIR D`:
-
-1. tick T — rule fires, `Move` scheduled for the neighbor.
-2. ticks T+1 … T+D — the wave is **charging** at its destination
-   (`delay` counts down; renders as `o`).
-3. tick T+D+1 — the wave is actionable at the destination
-   (`delay == 0`; renders as `#`).
-
-So a delay of 2 means roughly 3 ticks per hop, and a 16-cell trip at
-`send E 2` takes about 48 ticks. An `emit` with delay 0 places its bit one tick
-later, giving a pulse train.
-
-`inject ... D` behaves the same: the injected wave is actionable `D+1` ticks
-after injection.
-
----
-
-## 7. The audio pipeline
-
-Sound is rendered **synchronously** with grid ticks. Every tick, `sps`
-samples are produced (default `44100/60`). The grid's `freq`/`amp`/`phase`/`mod`
-actions take effect at the *start* of the next sample block.
-
-### Square oscillator
-
-Each channel `c` is a phase accumulator:
+`SETCH` writes one parameter of one channel:
 
 ```
-dt   = sps / rate
-twopi = 2π
-for s in 0..sps-1:
-    inst = c.freq
-    if c.modSrc >= 0: inst += c.modDepth * channels[c.modSrc].last
-    c.phase += inst * twopi * dt
-    c.last  = c.amp * (sin(c.phase) >= 0 ? +1 : -1)
-    mix += c.last
-audio.push(mix)
+0xFC 0x04 channel param vL vH
+param: 0=freq 1=duty 2=volume 3=mod_src 4=mod_depth 5=mod_dest
 ```
 
-* `inst` — instantaneous frequency; the FM term shifts it by
-  `modDepth * sample(modulator)`.
-* The square is derived from `sin(phase)` sign, giving a band-limited-ish
-  binary waveform.
-* `last` is the modulator's signal, so channel order in the `mod J D` routing
-  matters for audio-rate FM stacks.
+## The 64-byte block rule
 
-### WAV output
+The GRID is 32 bytes, so the low 6 bits of any address select a bit. JMP
+reuses the current `pc & 0xFFC0` (the containing 64-byte block) as the high
+bits — a block-local jump. Programs larger than 64 bytes use `JMPF`/`JZF`
+(full 16-bit). The `.org` directive places firmware tables anywhere in ROM.
 
-`--wav` writes a mono, 16-bit PCM file at `rate` Hz. Samples are hard-clamped
-to `[-1, 1]` before conversion. Duration = `ticks * sps / rate` seconds.
+## Programming patterns
 
----
+### Toggle / counter
 
-## 8. Rendering
+A "permanent 1" cell (never cleared) plus `XOR` flips a bit each pass:
 
-The ASCII render shows one grid frame:
-
-| Glyph | Condition                            |
-|-------|--------------------------------------|
-| `.`   | `!bit && !acc`                       |
-| `#`   | `bit && delay == 0`                  |
-| `o`   | `bit && delay > 0`                   |
-| `A`   | `!bit && acc` (only with `--acc`)    |
-
-A footer `tick=N  waves=K` reports the tick and the number of live waves
-(rebuilt at the end of each phase B).
-
----
-
-## 9. Files
-
-| File           | Role                                              |
-|----------------|---------------------------------------------------|
-| `flux1.hpp`    | types: `Cell`, `Wave`, `Rule`, `Chan`, class `Flux` |
-| `flux1.cpp`    | the tick, audio renderer, ASCII render            |
-| `main.cpp`     | `.flux` parser, CLI, WAV writer                   |
-| `examples/*.flux` | demo programs                                    |
-
-Compile:
-
-```bash
-g++ -O2 -std=c++17 main.cpp flux1.cpp -o flux1
 ```
+SET  0x0F        ; permanent 1
+GET  0x00        ; acc = bit0
+XOR  0x0F        ; acc = bit0 ^ 1
+PUT  0x00        ; bit0 = acc  → bit0 toggles every pass
+JZF  CARRY       ; if bit0 became 0 → ripple carry
+JMPF DONE
+```
+
+Two cells make a 2-bit counter; `music.asm` uses one to walk a 4-chord
+progression (C–Am–F–G).
+
+### Sound as state
+
+A channel's frequency/duty/volume are plain parameters that any code can set
+with `SETCH`. A free-running LFO is just a channel with a low frequency
+modulating another channel's frequency (FM) or volume (tremolo). Grid bits
+modulate audio; audio modulates audio.
+
+## Audio
+
+### Square synthesis
+
+Each channel has:
+
+```
+phase  : 16-bit accumulator (0..65535)
+freq   : Hz (16-bit)
+duty   : 0..255 pulse width
+volume : 0..255
+mod_src/mod_depth/mod_dest : modulation
+```
+
+Per output sample (rate = 44100 Hz default, 22050 for 8086):
+
+```
+phase += freq * 65536 / rate        (wraps at 65536)
+sample = (phase < duty * 256) ? +1 : -1
+out    = sample * volume / 255
+```
+
+### Modulation
+
+```
+base   = freq or duty or volume (mod_dest)
+src    = grid bit (0/1) | channel output (−1/+1) | off (0)
+value  = base + src * mod_depth / 256
+```
+
+Modulation is applied before the sample is produced; depth is 8.8 fixed point
+(256 = 1.0). Examples: `MOD 0 0xF2 200 0` → ch0 freq modulated by ch2's square
+output (±200/256 Hz wobble, i.e. FM); `MOD 1 0x10 120 2` → ch1 volume driven
+by grid bit 0x10 (beat flag).
+
+### Mixing
+
+The three channels sum to `-3..+3`, are clipped to `-1..+1`, then scaled to
+16-bit signed PCM. WAV output is mono 16-bit.
+
+## Rendering
+
+The emulator prints the GRID as 16×16 with ANSI colors: green `█` for a set
+bit, dark `░` for a cleared bit. `--acc` also prints per-channel registers.
+`--steps N` runs N instructions then prints one frame — useful for debugging.
+
+## Performance / porting notes
+
+* The core (`FluxCPU::tick`) is branch-free except for jumps; audio renders in
+  blocks, so WAV export is fast.
+* 8086 port plan: 22050 Hz sample rate, 16-bit integers, GRID as 32 bytes,
+  ROM from `firmware/*.flux`. See SPEC.md for the DOS roadmap.
