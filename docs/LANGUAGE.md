@@ -133,7 +133,7 @@ CARRY:
 DONE:
 ```
 
-Streaming a ROM frame into GRID (Bad Apple style):
+Streaming a ROM frame into GRID (animation style):
 
 ```asm
     COPY 0  FRAME+0     ; GRID byte 0 = ROM byte at FRAME

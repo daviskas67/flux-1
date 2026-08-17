@@ -1,0 +1,14 @@
+0:	88 89 8a 8b 8c 8d 40 44 45 42 fc 0 0 fc 2 4 
+10:	fc 2 8 fc 1 9 fc 0 0 fc 6 2d 0 fc 0 4 
+20:	fc 6 29 0 48 fc 5 39 0 fc 5 39 0 fc 0 4 
+30:	fc 6 38 0 fc 5 39 0 88 fc 0 1 fc 2 5 fc 
+40:	2 8 fc 1 a fc 0 1 fc 6 5c 0 fc 0 5 fc 
+50:	6 58 0 48 fc 5 68 0 fc 5 68 0 fc 0 5 fc 
+60:	6 67 0 fc 5 68 0 88 fc 0 2 fc 2 6 fc 2 
+70:	8 fc 1 b fc 0 2 fc 6 8b 0 fc 0 6 fc 6 
+80:	87 0 48 fc 5 97 0 fc 5 97 0 fc 0 6 fc 6 
+90:	96 0 fc 5 97 0 88 fc 0 3 fc 2 7 fc 2 8 
+a0:	fc 1 c fc 0 3 fc 6 ba 0 fc 0 7 fc 6 b6 
+b0:	0 48 fc 5 c6 0 fc 5 c6 0 fc 0 7 fc 6 c5 
+c0:	0 fc 5 c6 0 88 fc 0 8 fc 1 d fc 5 cc 0 
+

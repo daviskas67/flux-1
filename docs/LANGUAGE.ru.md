@@ -135,7 +135,7 @@ CARRY:
 DONE:
 ```
 
-Стриминг кадра ROM в GRID (в стиле Bad Apple):
+Стриминг кадра ROM в GRID (в стиле анимации):
 
 ```asm
     COPY 0  FRAME+0     ; байт GRID[0] = ROM[FRAME]

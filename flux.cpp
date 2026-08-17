@@ -60,7 +60,7 @@ static void writeWav(const std::string& path, const std::vector<float>& samples,
     }
 }
 
-static void renderFrame(const FluxCPU& cpu, bool showInfo) {
+static void renderFrame(const FluxCPU& cpu, bool showInfo, bool showGridHex = false) {
     printf("\x1b[H\x1b[2J");
     printf("FLUX-1  256-bit grid  3 square channels  PC=%04X ACC=%u CARRY=%d MODE=%u\n",
            cpu.pc, cpu.acc, (int)cpu.carry, cpu.mode);
@@ -79,6 +79,12 @@ static void renderFrame(const FluxCPU& cpu, bool showInfo) {
         }
         printf("\x1b[0m\n");
     }
+    if (showGridHex) {
+        printf("grid hex:");
+        for (int i = 0; i < GRID_BYTES; ++i)
+            printf(" %02X", cpu.grid[i]);
+        printf("\n");
+    }
     printf("cycles=%llu  pc=%04X\n",
            (unsigned long long)cpu.cycles(), cpu.pc);
     fflush(stdout);
@@ -91,7 +97,7 @@ int main(int argc, char** argv) {
     std::string wavPath;
     float wavRate = DEF_SAMPLE_RATE;
     double secs = 5.0;
-    bool headless = false, showInfo = false;
+    bool headless = false, showInfo = false, showGridHex = false;
     long steps = -1;
 
     for (int i = 1; i < argc; ++i) {
@@ -103,11 +109,13 @@ int main(int argc, char** argv) {
         else if (a == "--secs" && i + 1 < argc) secs = atof(argv[++i]);
         else if (a == "--headless") headless = true;
         else if (a == "--acc") showInfo = true;
+        else if (a == "--grid-hex") showGridHex = true;
         else if (a == "--steps" && i + 1 < argc) steps = atol(argv[++i]);
         else if (a == "-h" || a == "--help") {
             printf("Flux-1 emulator\n"
                    "usage: flux rom.flux [--tps N] [--frames N] [--wav out.wav]\n"
-                   "                     [--wav-rate HZ] [--secs S] [--headless] [--acc] [--steps N]\n");
+                   "                     [--wav-rate HZ] [--secs S] [--headless] [--acc]\n"
+                   "                     [--grid-hex] [--steps N]\n");
             return 0;
         }
         else file = a;
@@ -127,7 +135,7 @@ int main(int argc, char** argv) {
     // ---- run mode: fixed instruction count ----
     if (steps >= 0) {
         cpu.run((int)steps);
-        renderFrame(cpu, showInfo);
+        renderFrame(cpu, showInfo, showGridHex);
         return 0;
     }
 
